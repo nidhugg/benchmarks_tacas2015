@@ -1,0 +1,42 @@
+\documentclass{article}
+
+\usepackage{multirow}
+\usepackage{verbatim}
+\usepackage[margin=0.2in]{geometry}
+\usepackage{color}
+
+\begin{document}
+
+\newcommand{\cc}[1]{\multicolumn{1}{c|}{#1}}
+\newcommand{\dcc}[1]{\multicolumn{1}{c||}{#1}}
+
+\newcommand{\tools}{\cc{CBMC} & \cc{Goto} & \dcc{DPOR}}
+
+\begin{table}
+  \centering
+  \begin{tabular}{|l|c|c||r|r|r||r|r|r||r|r|r||}
+    \hline
+    \multirow{2}{*}{Benchmark} & \multirow{2}{*}{Fence} & \multirow{2}{*}{B} &
+    \multicolumn{3}{c||}{SC} & \multicolumn{3}{c||}{TSO} & \multicolumn{3}{c||}{PSO} \\
+    \cline{4-12}
+    & & & \tools & \tools & \tools \\
+    \hline
+    \hline
+    \input data
+  \end{tabular}
+  \caption{Experimental results}
+\end{table}
+
+* indicates ``time to first error'' for buggy benchmarks
+
+! indicates a crash
+
+t/o indicates a timeout
+
+{\color{red}Red number} indicates result different from CBMC
+
+\paragraph{Metadata:}
+
+\verbatiminput{metadata}
+
+\end{document}

@@ -1,0 +1,293 @@
+#!/bin/bash
+shopt -s extglob
+
+###########################
+# CONFIGURATION VARIABLES #
+###########################
+
+CBMC="./cbmc"
+GOTO="./goto-instr"
+DPORC="./nidhugg"
+
+CBMC_OPTS=""
+GOTO_OPTS=""
+DPORC_OPTS="-O2 --"
+
+TIMEOUT=${TIMEOUT:-"10m"}
+
+BENCHMARKS="benchmarks"
+SANITY="$BENCHMARKS/00_sanity.c"
+
+#########################
+# DO NOT EDIT THE REST! #
+#########################
+
+fail() {
+    echo $1 1>&2
+    rm $RES.log
+    rm -rf $RES
+    exit 1
+}
+
+sanity() {
+    if ! $1 &> /dev/null; then
+        fail "Could not run $1. Check options."
+    fi
+}
+
+show() {
+    echo $@
+    exit 0
+}
+
+whipit() {
+    SELFILE=$(tempfile)
+    "$@" 2>$SELFILE
+    RET=$?
+    SELECTION=$(cat $SELFILE)
+    rm $SELFILE
+    [ $RET == 1 ] || [ $RET == 0 ] || exit 1
+}
+
+res() {
+    echo -e "$@" | tee -a $RES.log
+}
+
+if ! command -v whiptail > /dev/null; then
+    fail "Please install whiptail"
+fi
+
+mkdir -p results
+RES=results/$(date +%Y%m%d_%H%M%S)
+
+mkdir $RES
+touch $RES.log
+
+RUN_CBMC=1
+RUN_GOTO=1
+RUN_DPORC=1
+
+if ! whiptail --yesno "Run all tools ($CBMC, $GOTO, $DPORC)?" 8 60; then
+    if ! whiptail --yesno "Run $CBMC?" 8 40; then
+        RUN_CBMC=0
+    fi
+    if ! whiptail --yesno "Run $GOTO?" 8 40; then
+        RUN_GOTO=0
+    fi
+    if ! whiptail --yesno "Run $DPORC?" 8 40; then
+        RUN_DPORC=0
+    fi
+    if [ "$RUN_CBMC" -ne "1" -a "$RUN_GOTO" -ne "1" -a "$RUN_DPORC" -ne "1" ]; then
+        fail "Please select some tool"
+    fi
+fi
+
+DPORC_MM="{-sc,-tso,...}"
+CBMC_MM="--mm {sc,tso,...}"
+GOTO_MM="{sc,tso,...}"
+
+if whiptail --yesno --defaultno \
+"Options:
+  $CBMC: $CBMC $CBMC_OPTS $CBMC_MM
+  $GOTO: $GOTO $GOTO_OPTS $GOTO_MM
+  $DPORC: $DPORC $DPORC_OPTS $DPORC_MM
+Do you want to change?" 11 60
+then
+    whipit whiptail --nocancel --inputbox "Options for $CBMC:" 8 50 -- "$CBMC_OPTS"
+    CBMC_OPTS=$SELECTION
+    echo $CBMC_OPTS
+    whipit whiptail --nocancel --inputbox "Options for $GOTO:" 8 50 -- "$GOTO_OPTS"
+    GOTO_OPTS=$SELECTION
+    echo $GOTO_OPTS
+    whipit whiptail --nocancel --inputbox "Options for $DPORC:" 8 50 -- "$DPORC_OPTS"
+    DPORC_OPTS=$SELECTION
+    echo $DPORC_OPTS
+fi
+
+ALLBENCH=$BENCHMARKS/*.@(c|i)
+
+if whiptail --yesno "Run all benchmarks?" 7 24; then
+    BENCH=$ALLBENCH
+else
+    WHPBENCH=()
+    for f in $ALLBENCH; do
+        WHPBENCH+=("$(basename $f)" "off")
+    done
+    whipit whiptail --separate-output --nocancel --checklist --noitem "Select benchmarks to run" 17 75 10 "${WHPBENCH[@]}"
+    if [ -z "$SELECTION" ]; then
+        fail "Please select some benchmarks"
+    fi
+    BENCH=$(echo $SELECTION | tr ' ' '\n' | while read s; do echo benchmarks/$s; done | tr '\n' ' ')
+fi
+
+res "# Selected benchmarks: ${BENCH//benchmarks\/}"
+
+ALLMODELS="sc tso pso"
+
+if whiptail --yesno "Run all memory models? ($ALLMODELS)" 7 39; then
+    MODELS=$ALLMODELS
+else
+    WHPMODELS=()
+    for f in $ALLMODELS; do
+        WHPMODELS+=("$f" "off")
+    done
+    whipit whiptail --separate-output --nocancel --noitem --checklist "Select models to run" 10 25 3 "${WHPMODELS[@]}"
+    if [ -z "$SELECTION" ]; then
+        fail "Please select some memory models"
+    fi
+    MODELS=$SELECTION
+fi
+
+res "# Raw results available in $RES/ and $RES.log"
+res ""
+res "# Timeout value is $TIMEOUT"
+res ""
+
+if [ "$RUN_CBMC" -eq "1" ]; then
+    sanity "$CBMC $CBMC_OPTS --mm sc $SANITY"
+    CBMCV=$($CBMC --version)
+    CBMC_FULL="$CBMC $CBMC_OPTS"
+
+    res "# Using $CBMC version $CBMCV"
+    res "# $CBMC command: $CBMC_FULL $CBMC_MM"
+    res ""
+fi
+if [ "$RUN_GOTO" -eq "1" ]; then
+    sanity "$GOTO no sc $SANITY $GOTO_OPTS"
+    GOTOV=$($GOTO -v)
+    GOTO_FULL="$GOTO $GOTO_OPTS"
+
+    res "# Using $GOTO version $GOTOV"
+    res "# $GOTO command: $GOTO_FULL $GOTO_MM"
+    res ""
+fi
+if [ "$RUN_DPORC" -eq "1" ]; then
+    sanity "$DPORC $DPORC_OPTS -sc $SANITY"
+    DPORCV=$($DPORC --version)
+    DPORC_FULL="$DPORC $DPORC_OPTS"
+
+    res "# Using $DPORC version $DPORCV"
+    res "# $DPORC command: $DPORC_FULL $DPORC_MM"
+    res ""
+fi
+
+res "# Selected models    : $MODELS"
+res ""
+
+res "# Benchmark,Bound,Fenced,Model,Tool,Time,Status"
+res ""
+
+WATCHDOG="timeout $TIMEOUT time -p"
+
+function run_tool {
+    if [ "$safe" = "sc" ]; then
+        VERSION=""
+    elif [ "$safe" = "tso" ]; then
+        if ! grep -q "TSO_FENCE();" $bench; then
+            return 1
+        fi
+        VERSION="-DENABLE_TSO_FENCES"
+    else
+        if ! grep -q "PSO_FENCE();" $bench; then
+            return 1
+        fi
+        VERSION="-DENABLE_PSO_FENCES"
+    fi
+    OUT=$RES/$name-$bound-$safe-under-$model-$tool
+    if [ "$tool" = "dporc" ]; then
+        if [ "$RUN_DPORC" -ne "1" ]; then
+            return 1
+        fi
+        if [ "$bound" != "no" ]; then
+            BOUND="--unroll=$bound"
+        else
+            BOUND=""
+        fi
+        $WATCHDOG $DPORC $VERSION $DPORC_OPTS $BOUND -$model $bench &> $OUT
+        ret=$?
+        if [ "$ret" -eq "124" ]; then
+            result="timeout"
+        elif [ "$ret" -eq "1" ]; then
+            result="crashed"
+        elif grep -q "Error detected" $OUT; then
+            result="incorrect"
+        else
+            result="correct"
+        fi
+    elif [ "$tool" = "goto" ]; then
+        if [ "$RUN_GOTO" -ne "1" ]; then
+            return 1
+        fi
+        $WATCHDOG $GOTO $bound $model $bench $GOTO_OPTS $VERSION &> $OUT
+        ret=$?
+        if [ "$ret" -eq "124" ]; then
+            result="timeout"
+        elif [ "$ret" -eq "10" ]; then
+            result="incorrect"
+        elif [ "$ret" -ne "0" ]; then
+            result="crashed"
+        else
+            result="correct"
+        fi
+    elif [ "$tool" = "cbmc" ]; then
+        if [ "$RUN_CBMC" -ne "1" ]; then
+            return 1
+        fi
+        if [ "$bound" != "no" ]; then
+            BOUND="--unwind $bound --no-unwinding-assertions"
+        else
+            BOUND=""
+        fi
+        $WATCHDOG $CBMC_FULL $BOUND --mm $model $bench $VERSION &> $OUT
+        ret=$?
+        if [ "$ret" -eq "124" ]; then
+            result="timeout"
+        elif [ "$ret" -eq "10" ]; then
+            result="incorrect"
+        elif [ "$ret" -ne "0" ]; then
+            result="crashed"
+        else
+            result="correct"
+        fi
+    fi
+    time=$(grep real $OUT | tail -n1 | cut -d' ' -f2)
+    if [ "$time" = "" ]; then
+        time="t/o"
+    fi
+    res "$name,$bound,$safe,$model,$tool,$time,$result"
+}
+
+function dethrash {
+    file=$1
+    N="10"
+    for i in $(seq 1 $N); do
+        cat "$file" > /dev/null
+        sleep 2
+    done
+}
+
+for bench in $BENCH; do
+    name=$(basename $bench)
+    BOUNDS=$(grep BOUND $bench | sed 's,.*BOUND ,,; s,*/.*,,')
+    if [ "$BOUNDS" = "" ]; then
+        BOUNDS="no"
+    fi
+    for bound in $BOUNDS; do
+        for safe in sc tso pso; do
+            for tool in cbmc goto dporc; do
+                for model in $MODELS; do
+                    echo -n 'Dethrashing...'
+                    dethrash "$bench"
+                    echo ' done.'
+                    run_tool
+                done
+            done
+        done
+    done
+    res ""
+
+done
+
+res "# Completed at $(date +%Y%m%d_%H%M%S)"
+./texify $RES.log
+cp table.pdf $RES.pdf
