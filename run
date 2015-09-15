@@ -7,7 +7,7 @@ shopt -s extglob
 
 CBMC="./cbmc"
 GOTO="./goto-instr"
-DPORC="./nidhugg"
+DPORC="./nidhuggc"
 
 CBMC_OPTS=""
 GOTO_OPTS=""
