@@ -67,6 +67,11 @@ RUN_CBMC=1
 RUN_GOTO=1
 RUN_DPORC=1
 
+DETHRASH=1
+if ! whiptail --yesno "Run dethrashing routine before each benchmark?" 8 60; then
+   DETHRASH=0
+fi
+
 if ! whiptail --yesno "Run all tools ($CBMC, $GOTO, $DPORC)?" 8 60; then
     if ! whiptail --yesno "Run $CBMC?" 8 40; then
         RUN_CBMC=0
@@ -276,9 +281,11 @@ for bench in $BENCH; do
         for safe in sc tso pso; do
             for tool in cbmc goto dporc; do
                 for model in $MODELS; do
-                    echo -n 'Dethrashing...'
-                    dethrash "$bench"
-                    echo ' done.'
+                    if [ "$DETHRASH" == "1" ]; then
+                        echo -n 'Dethrashing...'
+                        dethrash "$bench"
+                        echo ' done.'
+                    fi
                     run_tool
                 done
             done
