@@ -1,6 +1,0 @@
-#!/bin/bash
-
-rm table.pdf
-grep -e '^#' -e '^$' $1 | grep -v Benchmark | sed 's/# //g' > metadata
-grep -e '^$' -v $1 | grep -e '^#' -v | ./convert | sed 's/_/\\_/g' > data.tex
-latexmk -pdf table.tex
